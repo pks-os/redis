@@ -399,6 +399,10 @@ void loadServerConfigFromString(char *config) {
             if ((server.repl_slave_ro = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'"; goto loaderr;
             }
+        } else if (!strcasecmp(argv[0],"slave-ignore-maxmemory") && argc == 2) {
+            if ((server.repl_slave_ignore_maxmemory = yesnotoi(argv[1])) == -1) {
+                err = "argument must be 'yes' or 'no'"; goto loaderr;
+            }
         } else if (!strcasecmp(argv[0],"rdbcompression") && argc == 2) {
             if ((server.rdb_compression = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'"; goto loaderr;
@@ -431,14 +435,23 @@ void loadServerConfigFromString(char *config) {
             if ((server.active_defrag_enabled = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'"; goto loaderr;
             }
+            if (server.active_defrag_enabled) {
+#ifndef HAVE_DEFRAG
+                err = "active defrag can't be enabled without proper jemalloc support"; goto loaderr;
+#endif
+            }
         } else if (!strcasecmp(argv[0],"daemonize") && argc == 2) {
             if ((server.daemonize = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'"; goto loaderr;
             }
+        } else if (!strcasecmp(argv[0],"dynamic-hz") && argc == 2) {
+            if ((server.dynamic_hz = yesnotoi(argv[1])) == -1) {
+                err = "argument must be 'yes' or 'no'"; goto loaderr;
+            }
         } else if (!strcasecmp(argv[0],"hz") && argc == 2) {
-            server.hz = atoi(argv[1]);
-            if (server.hz < CONFIG_MIN_HZ) server.hz = CONFIG_MIN_HZ;
-            if (server.hz > CONFIG_MAX_HZ) server.hz = CONFIG_MAX_HZ;
+            server.config_hz = atoi(argv[1]);
+            if (server.config_hz < CONFIG_MIN_HZ) server.config_hz = CONFIG_MIN_HZ;
+            if (server.config_hz > CONFIG_MAX_HZ) server.config_hz = CONFIG_MAX_HZ;
         } else if (!strcasecmp(argv[0],"appendonly") && argc == 2) {
             int yes;
 
@@ -1039,6 +1052,8 @@ void configSetCommand(client *c) {
     } config_set_bool_field(
       "slave-read-only",server.repl_slave_ro) {
     } config_set_bool_field(
+      "slave-ignore-maxmemory",server.repl_slave_ignore_maxmemory) {
+    } config_set_bool_field(
       "activerehashing",server.activerehashing) {
     } config_set_bool_field(
       "activedefrag",server.active_defrag_enabled) {
@@ -1067,6 +1082,8 @@ void configSetCommand(client *c) {
       "slave-lazy-flush",server.repl_slave_lazy_flush) {
     } config_set_bool_field(
       "no-appendfsync-on-rewrite",server.aof_no_fsync_on_rewrite) {
+    } config_set_bool_field(
+      "dynamic-hz",server.dynamic_hz) {
 
     /* Numerical fields.
      * config_set_numerical_field(name,var,min,max) */
@@ -1117,7 +1134,7 @@ void configSetCommand(client *c) {
     } config_set_numerical_field(
       "lua-time-limit",server.lua_time_limit,0,LONG_MAX) {
     } config_set_numerical_field(
-      "slowlog-log-slower-than",server.slowlog_log_slower_than,0,LLONG_MAX) {
+      "slowlog-log-slower-than",server.slowlog_log_slower_than,-1,LLONG_MAX) {
     } config_set_numerical_field(
       "slowlog-max-len",ll,0,LONG_MAX) {
       /* Cast to unsigned. */
@@ -1153,11 +1170,11 @@ void configSetCommand(client *c) {
     } config_set_numerical_field(
       "cluster-slave-validity-factor",server.cluster_slave_validity_factor,0,INT_MAX) {
     } config_set_numerical_field(
-      "hz",server.hz,0,INT_MAX) {
+      "hz",server.config_hz,0,INT_MAX) {
         /* Hz is more an hint from the user, so we accept values out of range
          * but cap them to reasonable values. */
-        if (server.hz < CONFIG_MIN_HZ) server.hz = CONFIG_MIN_HZ;
-        if (server.hz > CONFIG_MAX_HZ) server.hz = CONFIG_MAX_HZ;
+        if (server.config_hz < CONFIG_MIN_HZ) server.config_hz = CONFIG_MIN_HZ;
+        if (server.config_hz > CONFIG_MAX_HZ) server.config_hz = CONFIG_MAX_HZ;
     } config_set_numerical_field(
       "watchdog-period",ll,0,INT_MAX) {
         if (ll)
@@ -1170,7 +1187,7 @@ void configSetCommand(client *c) {
     } config_set_memory_field("maxmemory",server.maxmemory) {
         if (server.maxmemory) {
             if (server.maxmemory < zmalloc_used_memory()) {
-                serverLog(LL_WARNING,"WARNING: the new maxmemory value set via CONFIG SET is smaller than the current memory usage. This will result in keys eviction and/or inability to accept new write commands depending on the maxmemory-policy.");
+                serverLog(LL_WARNING,"WARNING: the new maxmemory value set via CONFIG SET is smaller than the current memory usage. This will result in key eviction and/or the inability to accept new write commands depending on the maxmemory-policy.");
             }
             freeMemoryIfNeeded();
         }
@@ -1324,7 +1341,7 @@ void configGetCommand(client *c) {
     config_get_numerical_field("slave-announce-port",server.slave_announce_port);
     config_get_numerical_field("min-slaves-to-write",server.repl_min_slaves_to_write);
     config_get_numerical_field("min-slaves-max-lag",server.repl_min_slaves_max_lag);
-    config_get_numerical_field("hz",server.hz);
+    config_get_numerical_field("hz",server.config_hz);
     config_get_numerical_field("cluster-node-timeout",server.cluster_node_timeout);
     config_get_numerical_field("cluster-migration-barrier",server.cluster_migration_barrier);
     config_get_numerical_field("cluster-slave-validity-factor",server.cluster_slave_validity_factor);
@@ -1342,6 +1359,8 @@ void configGetCommand(client *c) {
             server.repl_serve_stale_data);
     config_get_bool_field("slave-read-only",
             server.repl_slave_ro);
+    config_get_bool_field("slave-ignore-maxmemory",
+            server.repl_slave_ignore_maxmemory);
     config_get_bool_field("stop-writes-on-bgsave-error",
             server.stop_writes_on_bgsave_err);
     config_get_bool_field("daemonize", server.daemonize);
@@ -1370,6 +1389,8 @@ void configGetCommand(client *c) {
             server.lazyfree_lazy_server_del);
     config_get_bool_field("slave-lazy-flush",
             server.repl_slave_lazy_flush);
+    config_get_bool_field("dynamic-hz",
+            server.dynamic_hz);
 
     /* Enum values */
     config_get_enum_field("maxmemory-policy",
@@ -2036,6 +2057,7 @@ int rewriteConfig(char *path) {
     rewriteConfigStringOption(state,"cluster-announce-ip",server.cluster_announce_ip,NULL);
     rewriteConfigYesNoOption(state,"slave-serve-stale-data",server.repl_serve_stale_data,CONFIG_DEFAULT_SLAVE_SERVE_STALE_DATA);
     rewriteConfigYesNoOption(state,"slave-read-only",server.repl_slave_ro,CONFIG_DEFAULT_SLAVE_READ_ONLY);
+    rewriteConfigYesNoOption(state,"slave-ignore-maxmemory",server.repl_slave_ignore_maxmemory,CONFIG_DEFAULT_SLAVE_IGNORE_MAXMEMORY);
     rewriteConfigNumericalOption(state,"repl-ping-slave-period",server.repl_ping_slave_period,CONFIG_DEFAULT_REPL_PING_SLAVE_PERIOD);
     rewriteConfigNumericalOption(state,"repl-timeout",server.repl_timeout,CONFIG_DEFAULT_REPL_TIMEOUT);
     rewriteConfigBytesOption(state,"repl-backlog-size",server.repl_backlog_size,CONFIG_DEFAULT_REPL_BACKLOG_SIZE);
@@ -2093,7 +2115,7 @@ int rewriteConfig(char *path) {
     rewriteConfigYesNoOption(state,"activedefrag",server.active_defrag_enabled,CONFIG_DEFAULT_ACTIVE_DEFRAG);
     rewriteConfigYesNoOption(state,"protected-mode",server.protected_mode,CONFIG_DEFAULT_PROTECTED_MODE);
     rewriteConfigClientoutputbufferlimitOption(state);
-    rewriteConfigNumericalOption(state,"hz",server.hz,CONFIG_DEFAULT_HZ);
+    rewriteConfigNumericalOption(state,"hz",server.config_hz,CONFIG_DEFAULT_HZ);
     rewriteConfigYesNoOption(state,"aof-rewrite-incremental-fsync",server.aof_rewrite_incremental_fsync,CONFIG_DEFAULT_AOF_REWRITE_INCREMENTAL_FSYNC);
     rewriteConfigYesNoOption(state,"rdb-save-incremental-fsync",server.rdb_save_incremental_fsync,CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC);
     rewriteConfigYesNoOption(state,"aof-load-truncated",server.aof_load_truncated,CONFIG_DEFAULT_AOF_LOAD_TRUNCATED);
@@ -2103,6 +2125,7 @@ int rewriteConfig(char *path) {
     rewriteConfigYesNoOption(state,"lazyfree-lazy-expire",server.lazyfree_lazy_expire,CONFIG_DEFAULT_LAZYFREE_LAZY_EXPIRE);
     rewriteConfigYesNoOption(state,"lazyfree-lazy-server-del",server.lazyfree_lazy_server_del,CONFIG_DEFAULT_LAZYFREE_LAZY_SERVER_DEL);
     rewriteConfigYesNoOption(state,"slave-lazy-flush",server.repl_slave_lazy_flush,CONFIG_DEFAULT_SLAVE_LAZY_FLUSH);
+    rewriteConfigYesNoOption(state,"dynamic-hz",server.dynamic_hz,CONFIG_DEFAULT_DYNAMIC_HZ);
 
     /* Rewrite Sentinel config if in Sentinel mode. */
     if (server.sentinel_mode) rewriteConfigSentinelOption(state);
@@ -2135,10 +2158,10 @@ void configCommand(client *c) {
 
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
         const char *help[] = {
-"get <pattern> -- Return parameters matching the glob-like <pattern> and their values.",
-"set <parameter> <value> -- Set parameter to value.",
-"resetstat -- Reset statistics reported by INFO.",
-"rewrite -- Rewrite the configuration file.",
+"GET <pattern> -- Return parameters matching the glob-like <pattern> and their values.",
+"SET <parameter> <value> -- Set parameter to value.",
+"RESETSTAT -- Reset statistics reported by INFO.",
+"REWRITE -- Rewrite the configuration file.",
 NULL
         };
         addReplyHelp(c, help);
@@ -2163,8 +2186,7 @@ NULL
             addReply(c,shared.ok);
         }
     } else {
-         addReplyErrorFormat(c, "Unknown subcommand or wrong number of arguments for '%s'. Try CONFIG HELP",
-            (char*)c->argv[1]->ptr);
+        addReplySubcommandSyntaxError(c);
         return;
     }
 }

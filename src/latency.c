@@ -152,7 +152,7 @@ int latencyResetEvent(char *event_to_reset) {
 
 /* ------------------------ Latency reporting (doctor) ---------------------- */
 
-/* Analyze the samples avaialble for a given event and return a structure
+/* Analyze the samples available for a given event and return a structure
  * populate with different metrics, average, MAD, min, max, and so forth.
  * Check latency.h definition of struct latenctStat for more info.
  * If the specified event has no elements the structure is populate with
@@ -294,7 +294,7 @@ sds createLatencyReport(void) {
 
         /* Potentially commands. */
         if (!strcasecmp(event,"command")) {
-            if (server.slowlog_log_slower_than == 0) {
+            if (server.slowlog_log_slower_than < 0) {
                 advise_slowlog_enabled = 1;
                 advices++;
             } else if (server.slowlog_log_slower_than/1000 >
@@ -560,10 +560,11 @@ sds latencyCommandGenSparkeline(char *event, struct latencyTimeSeries *ts) {
 
 /* LATENCY command implementations.
  *
- * LATENCY SAMPLES: return time-latency samples for the specified event.
+ * LATENCY HISTORY: return time-latency samples for the specified event.
  * LATENCY LATEST: return the latest latency for all the events classes.
  * LATENCY DOCTOR: returns an human readable analysis of instance latency.
  * LATENCY GRAPH: provide an ASCII graph of the latency of the specified event.
+ * LATENCY RESET: reset data of a specified event or all the data if no event provided.
  */
 void latencyCommand(client *c) {
     struct latencyTimeSeries *ts;
